@@ -1,67 +1,65 @@
 # Task 4 – AWS Cloud Architecture Summary
 
-## Overview
-
-This document outlines how the automated code audit tool would be deployed
-on AWS for an enterprise client, moving from the current local CLI script
-to a fully managed, serverless service.
+Goal: move the audit tool from a local script to a managed service on AWS for an enterprise client.
 
 ```mermaid
 flowchart LR
-    User[User / CI Pipeline] -->|HTTPS| APIGW[API Gateway]
-    APIGW -->|Invoke| Lambda[Lambda: Audit Function]
-    Lambda -->|Read secret| Secrets[Secrets Manager]
-    Lambda -->|Call| Claude[Anthropic Claude API]
-    Lambda -->|Store file| S3[S3: Uploads & Reports]
-    Lambda -->|Write result| DDB[DynamoDB: Audit Results]
-    Lambda -->|Publish| SNS[SNS Topic]
-    SNS -->|Notify| Notify[Client / Dashboard]
-    Lambda -.->|Log usage| CW[CloudWatch Metrics]
-    CW -->|Alarm| Budget[CloudWatch Alarm / AWS Budgets]
-    Budget -->|Alert| SNS2[SNS: Ops Alert]
+    U[User or CI pipeline] --> APIGW[API Gateway]
+    APIGW --> IN[Intake Lambda]
+    IN --> S3[(S3 files)]
+    IN --> DDB[(DynamoDB)]
+    IN --> SQS[SQS queue]
+    SQS -.->|failed jobs| DLQ[Dead letter queue]
+    SQS --> W[Audit Lambda]
+    W --> BR[Claude on Bedrock]
+    W --> DDB
+    W --> SNS[SNS notifications]
+    W -.-> CW[CloudWatch metrics]
+    CW --> AL[Alarm] --> OPS[SNS ops alert]
+    BR -.->|billing| BUD[AWS Budgets]
 ```
 
-## 1. Serverless Stack
+## 1. Serverless stack
 
-| Service | Role in this architecture | Why it was chosen |
+| Service | Job | Why |
 |---|---|---|
-| **Amazon API Gateway** | Public entry point that receives audit requests (file uploads or CI pipeline calls) over HTTPS | Handles authentication, request throttling, and request validation before anything reaches compute, without needing a managed server to sit in front of the application |
-| **AWS Lambda** | Runs the audit logic (the same core logic as `audit.py`): builds the prompt, calls the Claude API, validates the response against the schema, and applies the local fallback if needed | Audit requests are bursty and unpredictable rather than constant, so paying only per-invocation is far more cost-effective than running an always-on server. Lambda also scales automatically if many files are submitted at once (e.g. a large batch of pull requests) |
-| **Amazon S3** | Stores the original submitted files and the resulting JSON audit reports, using a versioned, encrypted bucket | Durable, cheap, effectively infinite storage, and a natural audit trail — every submission and its result is retained and versioned automatically |
-| **Amazon DynamoDB** | Stores structured audit results (summary, issues, severities) indexed by submission ID and timestamp, for fast retrieval by the dashboard | A serverless, auto-scaling NoSQL database is a strong fit here because the audit report is already structured JSON (matching our Pydantic schema) with no complex relational joins required, and query patterns are simple key lookups |
-| **Amazon SNS** | Publishes notifications once an audit completes, fanning out to email, Slack, or the client dashboard | Decouples the "audit finished" event from however each team wants to be notified, without hardcoding notification logic into the Lambda function itself |
-| **AWS Step Functions** *(optional, at scale)* | Orchestrates the multi-step audit flow (call primary provider → validate → retry → fallback → store → notify) as a visual, resumable state machine | As the fallback logic from Task 2 grows more complex, moving it out of a single Lambda function into Step Functions makes each step individually retryable, observable, and easier to debug than nested try/except blocks |
+| **API Gateway** | Front door. Checks who is calling and limits request rates | No server to run. Blocks anonymous and abusive traffic early |
+| **Intake Lambda** | Checks file type and size, saves the file, queues the job, replies "202 accepted" | Fast reply. The user never waits for the AI |
+| **SQS + dead letter queue** | Holds audit jobs. Jobs that keep failing go to the dead letter queue | Audits can outlast API Gateway's 29 second wait. The queue also absorbs bursts and keeps failed jobs for review |
+| **Audit Lambda** | Runs the `audit.py` logic: call Claude, check the JSON, use the backup scan if needed | Pay only when an audit runs. Scales up on its own |
+| **S3** | Stores uploaded files and reports (versioned, encrypted) | Cheap, durable, gives an audit trail |
+| **DynamoDB** | Stores status and report per audit ID | Reports are already JSON and are read by simple key lookups |
+| **SNS** | Sends "done", "Critical" and "needs review" messages | Email, Slack and dashboards can subscribe without code changes |
 
-This stack is fully serverless: there are no EC2 instances or containers to patch, provision, or scale manually, which suits a small engineering team supporting an internal tool.
+At larger scale, Step Functions can replace the retry and backup logic inside the Audit Lambda.
 
-## 2. Secrets & Security
+## 2. Secrets and security
 
-**Storing the API key**
-The Anthropic API key is stored in **AWS Secrets Manager**, not in code, environment variables baked into the Lambda deployment, or Parameter Store. Secrets Manager was chosen over Parameter Store specifically because it supports **automatic rotation** — a rotation Lambda can periodically request a new key and update the secret without any manual intervention or downtime, which matters for a credential with this level of access. Non-sensitive configuration values (e.g. the model name, retry counts) are still kept in **Systems Manager Parameter Store**, since they don't need rotation and Parameter Store is the cheaper option for plain configuration.
+**Recommended: Claude on Amazon Bedrock.** There is no API key to store. The Audit Lambda uses an IAM role that allows `bedrock:InvokeModel` for one model only. The client's code stays inside their AWS account. The one code change is swapping the Anthropic client for the Bedrock client.
 
-**Access control**
-The Lambda function is granted a dedicated **IAM execution role** scoped to the principle of least privilege:
-- `secretsmanager:GetSecretValue` restricted to the exact ARN of the Anthropic API key secret, not `*`
-- `dynamodb:PutItem` / `GetItem` restricted to the single audit-results table
-- `s3:GetObject` / `PutObject` restricted to the specific bucket and prefix used for this application
+**If we keep the direct Anthropic API (as in the demo):**
+- The key lives in **Secrets Manager**, never in code or plain environment variables.
+- Anthropic keys are made in the Anthropic console, so rotation is a short planned step: create a new key, update the secret, delete the old key. A CloudWatch alarm fires if the secret is older than 90 days. (Check Anthropic's current docs before promising full automatic rotation.)
+- Settings that are not secret (model name, retry count) go in **Parameter Store**.
 
-No wildcard permissions are granted, so that even if the Lambda function itself were somehow compromised, the blast radius is limited to exactly the resources this function needs.
+**Least-privilege IAM (both options):** each Lambda gets only what it needs, on exact resources, with no `*`:
+- Secrets read (or Bedrock invoke) for one secret or one model
+- DynamoDB read and write on one table
+- S3 read and write on one bucket prefix
+- SQS send or receive on one queue
 
-**Encryption**
-- Data in transit is encrypted via TLS, enforced at the API Gateway layer.
-- Data at rest is encrypted using S3 server-side encryption (SSE-S3 or SSE-KMS) and DynamoDB's built-in encryption at rest.
-- API Gateway requires an authorizer (IAM auth or Amazon Cognito, depending on whether internal or external users are calling it) so the endpoint cannot be invoked anonymously.
+**Encryption and access:** TLS on API Gateway. S3 and DynamoDB encrypted at rest. API Gateway uses IAM or Cognito login, so nobody can call it anonymously.
 
-## 3. Cost & Token Governance
+## 3. Cost and token governance
 
-LLM usage is billed per token, which makes it a cost line that can spike quickly and unexpectedly if usage patterns change (for example, a much larger file being submitted, or a bug causing repeated retries). This architecture treats token spend as something to actively monitor, not just react to after the invoice arrives.
+- **Log tokens.** The Audit Lambda writes input and output token counts to a custom CloudWatch metric after every call. Bedrock also reports its own token metrics.
+- **Alarm on spikes.** A CloudWatch alarm fires if daily tokens go above twice the 7-day average. It sends an SNS alert to the engineering lead.
+- **Budgets.** AWS Budgets alerts at 50%, 80% and 100% of the monthly budget. With Bedrock, Claude usage is on the AWS bill, so Budgets sees it. **With the direct Anthropic API it does not**, so set a monthly spend limit in the Anthropic console too.
+- **Hard limits, not only alerts:**
+  - Max file size, enforced in the Intake Lambda
+  - `max_tokens` cap on every call
+  - Lambda reserved concurrency, so a flood cannot run up the bill
+  - API Gateway usage plans and rate limits per client
+  - Dead letter queue, so failing jobs do not retry forever
 
-**Monitoring**
-- After each Claude API call, the Lambda function logs the input/output token counts returned by the API as a **custom CloudWatch metric** (e.g. `AuditTool/TokensUsed`).
-- A **CloudWatch Dashboard** visualizes daily and weekly token usage trends, so the team can see gradual drift, not just sudden spikes.
-
-**Alerting**
-- A **CloudWatch Alarm** is configured against the token-usage metric with a defined threshold (e.g. more than double the rolling 7-day average in a single day). When triggered, it publishes to an **SNS topic** that notifies the engineering lead via email or Slack.
-- Separately, **AWS Budgets** is configured with a monthly dollar threshold for overall AWS spend tied to this service, with alerts firing at 50%, 80%, and 100% of the budget — this catches broader infrastructure cost creep (Lambda invocations, S3 storage, DynamoDB throughput), not just LLM token spend specifically.
-
-Together, these give the team two independent layers of protection: one that catches unusual *usage patterns* early (token-level alarm), and one that catches unusual *spend* regardless of the cause (account-level budget alert).
+Alarms tell us when something is off. Limits stop it from getting expensive.

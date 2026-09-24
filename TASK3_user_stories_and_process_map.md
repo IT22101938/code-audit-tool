@@ -1,97 +1,127 @@
 # Task 3 – Business Analysis & Process Mapping
 
-## Part 1: User Stories (Given / When / Then)
+## Part 1: User Stories
 
-### Story 1 — Non-technical Project Lead submits code for auditing
+### Story 1: A Project Lead submits code for auditing
 
-| | |
-|---|---|
-| **Given** | A Project Lead is logged into the audit dashboard, with no coding background |
-| **When** | They upload a code file or document through the web upload screen |
-| **Then** | The system accepts the file, confirms receipt, starts the AI audit automatically, and displays a simple "Audit in progress" status with no technical jargon required |
+**As a** non-technical Project Lead
+**I want** to upload a file and see when the audit is done
+**So that** I know the work was checked without needing to read code.
 
 ```gherkin
 Feature: Submit code or documents for automated audit
 
-Scenario: Project Lead submits a file without needing technical knowledge
-  Given a Project Lead is logged into the audit dashboard
-  And they do not have a coding background
-  When they upload a code file or document through the web upload screen
-  Then the system accepts the file and confirms it was received
-  And the system automatically starts the AI audit in the background
-  And the Project Lead sees a simple "Audit in progress" status,
-    with no technical jargon required to understand what's happening
+  Scenario: Project Lead uploads a valid file
+    Given a Project Lead is logged in to the audit dashboard
+    When they upload a code file or document
+    Then the system confirms the file was received
+    And the audit starts automatically in the background
+    And the Project Lead sees a plain "Audit in progress" status
+
+  Scenario: Project Lead uploads a file that is not allowed
+    Given a Project Lead is logged in to the audit dashboard
+    When they upload a file that is too large or the wrong type
+    Then the system rejects the file
+    And shows a clear message saying what to fix
 ```
 
----
+### Story 2: A Critical security risk stops deployment
 
-### Story 2 — System detects a Critical security risk and halts deployment
-
-| | |
-|---|---|
-| **Given** | A code audit has completed for a submitted file |
-| **When** | The audit report contains at least one issue marked "Critical" severity |
-| **Then** | The deployment pipeline is automatically stopped, the responsible team is notified immediately, and deployment cannot continue until the issue is resolved or an authorized person approves an override |
+**As an** engineering manager
+**I want** the pipeline to stop when a Critical issue is found
+**So that** risky code never reaches production.
 
 ```gherkin
-Feature: Block deployment when a critical security issue is found
+Feature: Block deployment when a Critical issue is found
 
-Scenario: A Critical severity issue halts the pipeline
-  Given a code audit has completed for a submitted file
-  When the audit report contains at least one issue marked "Critical" severity
-  Then the deployment pipeline is automatically stopped before release
-  And the responsible engineering team is notified immediately
-  And the deployment cannot continue until the Critical issue is resolved
-    or an authorized person manually approves an override
+  Scenario: Audit finds a Critical issue
+    Given an audit has finished for a submitted file
+    When the report contains at least one Critical issue
+    Then the deployment pipeline is stopped before release
+    And the engineering team is notified straight away
+    And deployment stays blocked until the issue is fixed or an authorized person approves an override
+
+  Scenario: Report came from the backup scanner with no Critical issue
+    Given the AI provider failed and the local backup scanner produced the report
+    When the report contains no Critical issue
+    Then the pipeline marks the result as "needs human review"
+    And the result is not counted as a clean pass
 ```
 
----
+### Story 3: A manager exports the audit summary to a dashboard
 
-### Story 3 — Team manager exports the audit summary to a dashboard
-
-| | |
-|---|---|
-| **Given** | A completed audit report exists in JSON format |
-| **When** | A team manager selects "Export to Dashboard" |
-| **Then** | The summary, issue counts, and severities are sent to the executive dashboard, while raw technical detail remains available on request |
+**As a** team manager
+**I want** to send the audit summary to the executive dashboard
+**So that** leaders can see code health without reading technical detail.
 
 ```gherkin
-Feature: Export audit results for executive visibility
+Feature: Export audit results for executives
 
-Scenario: Team manager exports the JSON summary to a dashboard
-  Given a completed audit report exists in JSON format
-  When a team manager selects "Export to Dashboard"
-  Then the summary, issue counts, and severities are sent to the
-    executive dashboard
-  And the raw technical details remain available on request,
-    without cluttering the main dashboard view
+  Scenario: Manager exports a finished audit
+    Given a finished audit report exists
+    When the team manager selects "Export to Dashboard"
+    Then the summary, issue counts and severities appear on the executive dashboard
+    And the full technical details stay available on request
 ```
 
 ---
 
 ## Part 2: Process Map
 
+Flow: **User Upload → API Gateway → Validation Logic → Database Storage → Client Notification**
+
 ```mermaid
 sequenceDiagram
-    participant User as User (Project Lead)
-    participant Gateway as API Gateway
-    participant Validator as Validation Logic
-    participant DB as Database Storage
-    participant Notify as Client Notification
+    participant U as User
+    participant G as API Gateway
+    participant I as Intake Lambda
+    participant Q as Queue
+    participant W as Audit Worker
+    participant L as Claude API
+    participant D as Database
+    participant N as Notification
 
-    User->>Gateway: Upload code/document file
-    Gateway->>Validator: Forward file for validation & AI audit
-    Validator->>Validator: Run schema-enforced LLM audit
-    Validator->>DB: Store structured JSON audit report
-    DB-->>Validator: Confirm save
-    Validator->>Notify: Trigger notification with summary
-    Notify-->>User: Send audit result (status + summary)
+    U->>G: Upload file
+    G->>I: Forward request
+    I->>I: Check file type and size
+    alt File is not valid
+        I-->>U: Reject with a clear error
+    else File is valid
+        I->>D: Save status as PENDING
+        I->>Q: Add audit job
+        I-->>U: 202 Accepted with audit ID
+    end
+
+    Q->>W: Pick up job
+    W->>L: Send code and report schema
+    alt Claude answers
+        L-->>W: Structured JSON
+    else Claude fails after retries
+        W->>W: Run local backup scan
+        Note over W: Saved as fallback in record metadata
+    end
+
+    W->>W: Check JSON against the schema
+    W->>D: Save report and set status DONE
+
+    alt Critical issue found
+        W->>N: Critical alert
+        N-->>U: Deployment blocked
+    else Report came from backup scan
+        W->>N: Needs human review
+        N-->>U: Not a clean pass
+    else No Critical issue
+        W->>N: Audit finished
+        N-->>U: Summary sent
+    end
 ```
 
-| Stage | Responsibility |
+| Stage | What happens |
 |---|---|
-| User Upload | User submits a code or document file via the web interface |
-| API Gateway | Receives the request and routes it securely to backend services |
-| Validation Logic | Executes the schema-enforced LLM audit (`audit.py`) and validates the response against the defined JSON schema |
-| Database Storage | Persists the validated audit report for historical tracking and dashboard access |
-| Client Notification | Notifies the submitter and relevant stakeholders once the audit is complete |
+| User Upload | User sends a file from the web page or from a CI pipeline. |
+| API Gateway | Checks who is calling, limits request rates, passes the request on. |
+| Validation Logic | Two checks. **Input check:** file type and size, before anything is sent to the AI. **Output check:** the AI answer must match the report schema (Pydantic). Bad answers are retried, then the backup scan runs. |
+| Database Storage | Saves the report, the status (PENDING, DONE, FAILED) and whether it came from the AI or the backup scan. |
+| Client Notification | Tells the user the result. Critical issues send an alert and block the pipeline. |
+
+**Why a queue?** An audit can take longer than an API request is allowed to wait. So the user gets an immediate "received" answer and the audit runs in the background. This is also what shows the "Audit in progress" status in Story 1.
