@@ -8,7 +8,6 @@ If Claude can't be reached, the tool switches to a local backup scanner
 instead of failing.
 
 **Task 2 choice: Path A** (fallback logic and automated tests).
-Path B (change plan and executive summary) is included as a bonus.
 
 ---
 
@@ -96,8 +95,6 @@ You should see `2 passed`. The tests use fake API responses, so they need no key
 | `requirements.txt` | Packages needed |
 | `.env.example` | Template for your `.env` file |
 | `TASK2_PATH_A.md` | Fallback logic and testing notes (chosen path) |
-| `TASK2_PATH_B_change_plan.md` | Bonus: how a team can start using the tool |
-| `executive_summary.pdf` | Bonus: one-page summary for non-technical leaders |
 | `TASK3_user_stories_and_process_map.md` | User stories and the process diagram |
 | `TASK4_aws_architecture.md` | How to host this on AWS |
 
@@ -116,7 +113,7 @@ if something looks off, and sometimes check it against the official
 documentation.
 
 ### 2. Role Alignment
-I would prefer a split of **60% Dev / 40% BA** over my first 6 months. I am
+I would prefer a split of 60% Dev / 40% BA over my first 6 months. I am
 early in my career, so I want some time on the business side too, to find out
 where my strengths fit before I narrow my focus. This case study showed me I
 enjoy the technical side more, but I want to stay open to consulting.
