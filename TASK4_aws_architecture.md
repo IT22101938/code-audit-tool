@@ -2,22 +2,9 @@
 
 Goal: move the audit tool from a local script to a managed service on AWS for an enterprise client.
 
-```mermaid
-flowchart LR
-    U[User or CI pipeline] --> APIGW[API Gateway]
-    APIGW --> IN[Intake Lambda]
-    IN --> S3[(S3 files)]
-    IN --> DDB[(DynamoDB)]
-    IN --> SQS[SQS queue]
-    SQS -.->|failed jobs| DLQ[Dead letter queue]
-    SQS --> W[Audit Lambda]
-    W --> BR[Claude on Bedrock]
-    W --> DDB
-    W --> SNS[SNS notifications]
-    W -.-> CW[CloudWatch metrics]
-    CW --> AL[Alarm] --> OPS[SNS ops alert]
-    BR -.->|billing| BUD[AWS Budgets]
-```
+## How it flows
+
+A user or a CI pipeline sends a file to API Gateway. API Gateway passes it to the Intake Lambda, which saves the file to S3, writes a record to DynamoDB, and drops a job on an SQS queue. The Audit Lambda picks up the job, calls Claude on Bedrock, saves the result back to DynamoDB, and sends a notification through SNS. CloudWatch watches everything and raises an alarm if something looks wrong, and AWS Budgets watches the spending.
 
 ## 1. Serverless stack
 
