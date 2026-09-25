@@ -1,9 +1,3 @@
-"""
-Unit tests for audit.py. Run with: pytest test_audit.py -v
-
-Both API calls are mocked - no real network requests, no API key needed.
-"""
-
 import os
 from unittest.mock import MagicMock, patch
 

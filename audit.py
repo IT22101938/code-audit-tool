@@ -1,20 +1,3 @@
-"""
-Code audit tool - sends a source file to Claude and gets back a
-structured JSON report (security issues, bugs, perf, maintainability).
-
-Structured output is enforced with Claude's native tool use: the JSON Schema
-(generated from the Pydantic model) is sent as a tool definition and the model
-is forced to call it. The result is then re-validated with Pydantic.
-
-If Claude can't be reached or returns something unusable, a local rule-based
-scanner takes over so the tool still produces a report.
-
-Usage:
-    python audit.py sample_vulnerable_code.py
-    python audit.py sample_vulnerable_code.py --output report.json
-    python audit.py sample_vulnerable_code.py --no-fallback
-"""
-
 import os
 import re
 import sys
@@ -42,7 +25,7 @@ def log(msg: str) -> None:
     print(msg, file=sys.stderr)
 
 
-# ---------------------------------------------------------------- schema
+# schema
 class IssueType(str, Enum):
     SECURITY_RISK = "Security Risk"
     BUG = "Bug"
@@ -101,7 +84,7 @@ class BadModelOutput(Exception):
     """Claude replied, but the answer is unusable."""
 
 
-# ------------------------------------------------------- local fallback
+# local fallback
 # Basic pattern checks for when Claude is down. Not a full review.
 SECRET_PATTERN = re.compile(r'(api[_-]?key|password|secret|token)\s*=\s*["\'][^"\']{6,}["\']', re.IGNORECASE)
 SQL_FSTRING_PATTERN = re.compile(r'f["\'].*?(SELECT|INSERT|UPDATE|DELETE).*?\{.*?\}', re.IGNORECASE)
@@ -162,7 +145,7 @@ def local_fallback_audit(code: str, filename: str) -> AuditReport:
     return AuditReport(summary=summary, issues=issues, recommended_fixes=fixes)
 
 
-# ------------------------------------------------------------- main flow
+# main flow
 def run_audit(code: str, filename: str, api_key: Optional[str] = None, use_fallback: bool = True) -> AuditReport:
     key = api_key or os.getenv("ANTHROPIC_API_KEY")
     if not key:
